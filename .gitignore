@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+build/
+dist/
+.DS_Store
+# Migration artifacts contain private files. Never commit them.
+private/
+*.sqlite*
+*.db
+*.jsonl
+.env*
