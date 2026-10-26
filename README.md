@@ -42,3 +42,7 @@ python3 -B -m unittest discover -s tests -v
 测试使用临时目录、合成 profile 和测试 Git 仓库，不触碰真实 App 数据。本版本没有对真实生产 profile 执行新程序验收；先前迁移案例使用的专用脚本不等于本程序已获生产验证。
 
 官方 [App Server 文档](https://learn.chatgpt.com/docs/app-server#api-overview)提供聊天和 Goal 读取接口；本程序的 SQLite 冷恢复适配器为社区实现，不应当作官方稳定 API。
+
+## 使用 Skill
+
+先安装本仓库的 CLI，再把 `skills/workspace-migration` 文件夹加入你管理的 Codex skills 目录。已有同名技能时先比对，不覆盖。保持本仓库可访问，Skill 会按需读取 SPEC/RUNBOOK；在 Codex 中通过 `$workspace-migration` 调用。它不会自行安装 CLI、迁移凭据或获得服务中断授权。

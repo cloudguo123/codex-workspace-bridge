@@ -133,6 +133,17 @@ class ProfileTests(Fixture):
         _,target,_,s=self.setup_stage();before=profile.fingerprints(target);(Path(s['stage'])/'ready'/'sessions'/'source.jsonl').write_text('tampered')
         with self.assertRaises(core.Refused):profile.commit(s['stage'],s['plan_sha256'],self.r/'backup',True)
         self.assertEqual(profile.fingerprints(target),before)
+    def test_target_ui_preserved_when_source_has_none(self):
+        src=make_profile(self.r/'source');target=make_profile(self.r/'target','existing')
+        ui=target/'.codex-global-state.json';ui.write_text('{"draft":"keep me"}');original=ui.read_bytes()
+        snap=profile.snapshot(src,self.r/'snap',True);s=profile.prepare(snap['snapshot'],target,self.r/'stage',app_stopped=True)
+        profile.commit(s['stage'],s['plan_sha256'],self.r/'backup',True);self.assertEqual(ui.read_bytes(),original)
+    def test_project_ui_paths_only_and_existing_draft_preserved(self):
+        src=make_profile(self.r/'source');target=make_profile(self.r/'target','existing')
+        (src/'.codex-global-state.json').write_text(json.dumps({'local-projects':{str(src/'workspace'):{'directory':str(src/'workspace')}},'draft':'do not migrate'}))
+        (target/'.codex-global-state.json').write_text('{"draft":"target draft"}')
+        snap=profile.snapshot(src,self.r/'snap',True);s=profile.prepare(snap['snapshot'],target,self.r/'stage',app_stopped=True)
+        value=core.load(Path(s['stage'])/'ready'/'.codex-global-state.json');self.assertEqual(value['draft'],'target draft');self.assertIn(str(target/'workspace'),value['local-projects'])
     def test_before_image_tamper_refused(self):
         _,target,_,s=self.setup_stage();before=profile.fingerprints(target);(Path(s['stage'])/'before'/'state_5.sqlite').write_text('bad backup')
         with self.assertRaises(core.Refused):profile.commit(s['stage'],s['plan_sha256'],self.r/'backup',True)
@@ -168,12 +179,16 @@ class ProfileTests(Fixture):
         with self.assertRaises(core.Refused):profile.rollback(s['stage'],True)
         self.assertEqual((target/'sessions'/'source.jsonl').read_text(),'user edit')
     def test_injected_failure_retains_recovery_journal(self):
-        _,target,_,s=self.setup_stage();before=(target/'state_5.sqlite').read_bytes();real=profile.digest
-        def fail(p):
-            if Path(p)==target/'goals_1.sqlite' and (Path(s['stage'])/'write-1.json').exists():raise OSError('synthetic disk error')
-            return real(p)
-        with patch.object(profile,'digest',side_effect=fail):
+        _,target,_,s=self.setup_stage();before=profile.fingerprints(target);real=profile.os.replace;calls=[]
+        def fail(src,dst):
+            if Path(dst).parent==target and Path(dst).name in profile.DATABASES:
+                calls.append(str(dst))
+                if len(calls)==2:raise OSError('synthetic second-store disk error')
+            return real(src,dst)
+        with patch.object(profile.os,'replace',side_effect=fail):
             with self.assertRaises(OSError):profile.commit(s['stage'],s['plan_sha256'],self.r/'backup',True)
-        self.assertTrue((Path(s['stage'])/'commit-intent.json').exists());profile.rollback(s['stage'],True);self.assertEqual((target/'state_5.sqlite').read_bytes(),before)
+        self.assertTrue((Path(s['stage'])/'commit-intent.json').exists())
+        self.assertEqual(profile.fingerprints(target),before)
+        profile.rollback(s['stage'],True);self.assertEqual(profile.fingerprints(target),before)
 
 if __name__=='__main__':unittest.main()

@@ -17,7 +17,7 @@ DATABASES = {
 }
 DIRECTORIES = ('sessions','archived_sessions','generated_images')
 UI_KEYS = {'local-projects','thread-project-assignments','app-server-project-id-by-legacy-project-id-by-host','project-order'}
-PATH_KEYS = {'cwd','rollout_path','path','root','working_directory','image_path','file_path','image_url','local_path'}
+PATH_KEYS = {'cwd','rollout_path','path','root','working_directory','image_path','file_path','image_url','local_path','directory','project_path','projectPath','workspace_root'}
 STATE_PATH_COLUMNS = {'threads': {'cwd','rollout_path','agent_path'}, 'project_roots': {'path'}}
 GOAL_COLUMNS = {'thread_id','goal_id','objective','status','token_budget','tokens_used','time_used_seconds','created_at_ms','updated_at_ms'}
 
@@ -63,6 +63,13 @@ def typed_json(value,mapping):
     if isinstance(value,dict):
         return {k:relocate(v,mapping) if k in PATH_KEYS and isinstance(v,str) else typed_json(v,mapping) for k,v in value.items()}
     return value  # Never replace prose, commands, prompts or model context strings.
+
+def relocate_ui(value, mapping):
+    # Only called for the explicit project-key allowlist, never drafts/settings.
+    if isinstance(value, dict):
+        return {relocate(k, mapping): relocate_ui(v, mapping) for k, v in value.items()}
+    if isinstance(value, list): return [relocate_ui(x, mapping) for x in value]
+    return relocate(value, mapping)
 
 def sanitize_db(path,name):
     with connect(path,'rw') as c:
@@ -114,7 +121,7 @@ def snapshot(home,out,app_stopped=False):
     ui=home/'.codex-global-state.json'
     if ui.is_file() and not ui.is_symlink(): save(data/ui.name,{k:v for k,v in load(ui).items() if k in UI_KEYS})
     save(dest/'original-goals.json',original_goals)
-    files={p.relative_to(dest).as_posix():digest(p) for p in dest.rglob('*') if p.is_file()}
+    files={p.relative_to(dest).as_posix():digest(p) for p in sorted(dest.rglob('*')) if p.is_file()}
     save(dest/'manifest.json',{'schema':'workbridge.profile/v1','source_home':str(home),'files':files,
         'excluded':['auth','remote enrollments','queues','logs','automations','MCP credentials','plugin credentials','other unlisted profile state'],
         'goals_held_paused':True,'permissions_reset':True,
@@ -168,7 +175,7 @@ def merge_database(src,target,name,mapping):
                 raise Refused('Migration history mismatch: '+name)
         a.row_factory=b.row_factory=sqlite3.Row
         stats={}
-        for table in DATABASES[name]:
+        for table in sorted(DATABASES[name]):
             cols=list(a.execute('pragma table_info('+qi(table)+')'))
             if not cols: continue
             names=[x[1] for x in cols]; pk=[x[1] for x in sorted(cols,key=lambda x:x[5]) if x[5]]
@@ -216,11 +223,14 @@ def prepare(snapshot_dir,target,out,mapping=None,app_stopped=False,expected=None
         ids={x[0] for x in state.execute('select id from threads')}
         if any(x[0] not in ids for x in goals.execute('select thread_id from thread_goals')): raise Refused('Orphan Goal binding')
     ui='.codex-global-state.json'
+    if (target/ui).exists():
+        if (target/ui).is_symlink(): raise Refused('Target UI store is a symlink')
+        shutil.copyfile(target/ui,before/ui); os.chmod(before/ui,0o600)
     if (src/'data'/ui).exists():
-        source_ui=typed_json(load(src/'data'/ui),mapping)
-        # UI path keys are host/version dependent. No blanket home/text replacement.
+        incoming_ui = load(src/'data'/ui)
+        if set(incoming_ui) - UI_KEYS: raise Refused('Unexpected source UI keys')
+        source_ui=relocate_ui(incoming_ui,mapping)
         target_ui=load(target/ui) if (target/ui).is_file() else {}
-        if (target/ui).exists(): shutil.copyfile(target/ui,before/ui); os.chmod(before/ui,0o600)
         save(ready/ui,additive(target_ui,source_ui))
     additions=[]
     for rel in m['files']:
@@ -245,7 +255,7 @@ def prepare(snapshot_dir,target,out,mapping=None,app_stopped=False,expected=None
             if not pp.is_absolute() or not pp.is_relative_to(target): raise Refused('Unmapped rollout path')
             if not pp.is_file() and not (ready/pp.relative_to(target)).is_file(): raise Refused('Missing rollout segment')
     if fingerprints(target)!=before_fps: raise Refused('Target changed during prepare')
-    ready_files={p.relative_to(ready).as_posix():digest(p) for p in ready.rglob('*') if p.is_file()}
+    ready_files={p.relative_to(ready).as_posix():digest(p) for p in sorted(ready.rglob('*')) if p.is_file()}
     save(stage/'plan.json',{'schema':'workbridge.profile-commit/v1','target':str(target),'before':before_fps,'ready':ready_files,'additions':additions,'database_additions':stats,'mapping':mapping,'gui_verified':False})
     return {'stage':str(stage),'plan_sha256':digest(stage/'plan.json'),'database_additions':stats,'status':'prepared_live_unchanged'}
 
